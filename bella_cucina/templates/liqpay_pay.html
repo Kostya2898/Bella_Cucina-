@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Оплата через LiqPay — Bella Cucina{% endblock %}
+{% block content %}
+<div style="max-width:480px; margin:0 auto; text-align:center;">
+    <div class="content-center">
+        <div style="font-size:3rem; margin-bottom:1rem;">🇺🇦</div>
+        <h1 style="margin-bottom:0.75rem;">Оплата через LiqPay</h1>
+        <p style="color:#aaa; margin-bottom:2rem; font-size:0.95rem;">
+            Замовлення <strong style="color:#d4af37;">#{{ order.id }}</strong> —
+            <strong style="color:#f0e68c;">${{ "%.2f"|format(order.total_price) }}</strong>
+        </p>
+        <p style="color:#888; font-size:0.9rem; margin-bottom:1.5rem;">
+            Зараз вас буде перенаправлено на сторінку LiqPay для безпечної оплати.
+        </p>
+
+        <!-- LiqPay форма — автоматично відправляється -->
+        <form id="liqpay-form" method="POST" action="https://www.liqpay.ua/api/3/checkout" accept-charset="utf-8">
+            <input type="hidden" name="data"      value="{{ data_b64 }}">
+            <input type="hidden" name="signature" value="{{ signature }}">
+            <button type="submit" class="btn" style="width:100%; padding:1rem; font-size:1rem;">
+                🔒 Перейти до оплати LiqPay
+            </button>
+        </form>
+
+        <p style="color:#555; font-size:0.8rem; margin-top:1.5rem;">
+            🔒 Захищено SSL · LiqPay — платіжна система ПриватБанку
+        </p>
+        <a href="{{ url_for('payment_select', order_id=order.id) }}" class="back-link" style="display:block; margin-top:1rem;">
+            ← Обрати інший спосіб оплати
+        </a>
+    </div>
+</div>
+
+{% block scripts %}
+<script>
+    // Автоматично відправляємо форму через 2 секунди
+    setTimeout(() => document.getElementById('liqpay-form').submit(), 2000);
+</script>
+{% endblock %}
+{% endblock %}

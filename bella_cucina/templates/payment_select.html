@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Оплата замовлення #{{ order.id }} — Bella Cucina{% endblock %}
+{% block content %}
+<div style="max-width:620px; margin:0 auto;">
+    <div class="content-center">
+        <div style="text-align:center; margin-bottom:2rem;">
+            <div style="font-size:2.5rem; margin-bottom:0.75rem;">💳</div>
+            <h1 style="margin-bottom:0.5rem;">Оплата замовлення</h1>
+            <p style="color:#aaa;">Замовлення <strong style="color:#d4af37;">#{{ order.id }}</strong> на суму
+                <strong style="color:#f0e68c; font-size:1.2rem;">${{ "%.2f"|format(order.total_price) }}</strong>
+            </p>
+        </div>
+
+        <!-- Список страв -->
+        <div style="background:rgba(255,255,255,0.03); border-radius:10px; padding:1rem 1.2rem; margin-bottom:2rem; border:1px solid rgba(212,175,55,0.12);">
+            {% for item in order.items %}
+                <div style="display:flex; justify-content:space-between; padding:0.45rem 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.9rem;">
+                    <span style="color:#aaa;">{{ item.dish.name }} ×{{ item.quantity }}</span>
+                    <span>${{ "%.2f"|format(item.price * item.quantity) }}</span>
+                </div>
+            {% endfor %}
+            {% if order.discount %}
+                {% set subtotal = namespace(val=0) %}
+                {% for i in order.items %}{% set subtotal.val = subtotal.val + i.price * i.quantity %}{% endfor %}
+                <div style="display:flex; justify-content:space-between; padding:0.45rem 0; font-size:0.88rem; color:#81c784;">
+                    <span>Знижка ({{ order.discount|int }}%)</span>
+                    <span>−${{ "%.2f"|format(subtotal.val - order.total_price) }}</span>
+                </div>
+            {% endif %}
+            <div style="display:flex; justify-content:space-between; padding-top:0.75rem; font-weight:bold; font-size:1.05rem; color:#f0e68c;">
+                <span>Разом:</span>
+                <span style="color:#d4af37;">${{ "%.2f"|format(order.total_price) }}</span>
+            </div>
+        </div>
+
+        <!-- Методи оплати -->
+        <h2 style="font-size:1.1rem; margin-bottom:1.5rem; color:#aaa;">Оберіть спосіб оплати:</h2>
+        <div style="display:flex; flex-direction:column; gap:1rem;">
+
+            <!-- Готівка -->
+            <div class="card" style="padding:1.3rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
+                    <div style="display:flex; align-items:center; gap:1rem;">
+                        <div style="font-size:2rem;">💵</div>
+                        <div>
+                            <div style="font-weight:bold; color:#f0e68c;">Готівка при отриманні</div>
+                            <div style="color:#aaa; font-size:0.85rem; margin-top:0.2rem;">Оплата кур'єру або на місці</div>
+                        </div>
+                    </div>
+                    <form method="POST" action="{{ url_for('payment_cash', order_id=order.id) }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button type="submit" class="btn btn-secondary" style="padding:0.6rem 1.5rem; white-space:nowrap;">Обрати →</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Stripe -->
+            {% if stripe_enabled %}
+            <div class="card" style="padding:1.3rem;" id="stripe-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
+                    <div style="display:flex; align-items:center; gap:1rem;">
+                        <div style="font-size:2rem;">💳</div>
+                        <div>
+                            <div style="font-weight:bold; color:#f0e68c;">Банківська картка (Stripe)</div>
+                            <div style="color:#aaa; font-size:0.85rem; margin-top:0.2rem;">Visa, Mastercard — міжнародні картки</div>
+                        </div>
+                    </div>
+                    <button onclick="showStripeForm()" class="btn" style="padding:0.6rem 1.5rem; white-space:nowrap;">Обрати →</button>
+                </div>
+
+                <!-- Stripe форма (прихована) -->
+                <div id="stripe-form" style="display:none; margin-top:1.5rem; padding-top:1.5rem; border-top:1px solid rgba(212,175,55,0.15);">
+                    <div id="card-element" style="background:rgba(255,255,255,0.07); border:1px solid rgba(212,175,55,0.35); border-radius:8px; padding:1rem; margin-bottom:1rem;"></div>
+                    <div id="card-errors" style="color:#ef5350; font-size:0.88rem; margin-bottom:0.75rem; min-height:1.2rem;"></div>
+                    <button id="stripe-submit" onclick="submitStripe()" class="btn" style="width:100%; padding:0.9rem;">
+                        💳 Сплатити ${{ "%.2f"|format(order.total_price) }}
+                    </button>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- LiqPay -->
+            {% if liqpay_enabled %}
+            <div class="card" style="padding:1.3rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
+                    <div style="display:flex; align-items:center; gap:1rem;">
+                        <div style="font-size:2rem;">🇺🇦</div>
+                        <div>
+                            <div style="font-weight:bold; color:#f0e68c;">LiqPay</div>
+                            <div style="color:#aaa; font-size:0.85rem; margin-top:0.2rem;">Українські картки, PrivatBank, Apple Pay</div>
+                        </div>
+                    </div>
+                    <a href="{{ url_for('liqpay_pay', order_id=order.id) }}" class="btn" style="padding:0.6rem 1.5rem; white-space:nowrap; text-decoration:none;">Обрати →</a>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if not stripe_enabled and not liqpay_enabled %}
+            <div class="alert alert-info">
+                ℹ️ Онлайн-оплата не налаштована. Доступна лише оплата готівкою.
+            </div>
+            {% endif %}
+        </div>
+
+        <a href="{{ url_for('cart') }}" class="back-link" style="display:block; text-align:center; margin-top:2rem;">← Повернутись до кошика</a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if stripe_enabled %}
+<script src="https://js.stripe.com/v3/"></script>
+<script>
+    const stripe  = Stripe('{{ stripe_public_key }}');
+    const elements = stripe.elements();
+    let cardElement;
+
+    function showStripeForm() {
+        const form = document.getElementById('stripe-form');
+        form.style.display = 'block';
+        if (!cardElement) {
+            cardElement = elements.create('card', {
+                style: {
+                    base: { color:'#e0e0e0', fontSize:'16px', '::placeholder':{color:'#888'} },
+                    invalid: { color:'#ef5350' }
+                }
+            });
+            cardElement.mount('#card-element');
+            cardElement.on('change', e => {
+                document.getElementById('card-errors').textContent = e.error ? e.error.message : '';
+            });
+        }
+        form.scrollIntoView({ behavior:'smooth', block:'nearest' });
+    }
+
+    async function submitStripe() {
+        const btn = document.getElementById('stripe-submit');
+        btn.disabled = true;
+        btn.textContent = 'Обробляємо...';
+
+        try {
+            // Створюємо PaymentIntent
+            const res  = await fetch('{{ url_for("stripe_create_intent", order_id=order.id) }}', { method:'POST', headers:{'X-CSRFToken':'{{ csrf_token() }}'} });
+            const data = await res.json();
+            if (data.error) throw new Error(data.error);
+
+            // Підтверджуємо оплату
+            const { error, paymentIntent } = await stripe.confirmCardPayment(data.client_secret, {
+                payment_method: { card: cardElement }
+            });
+            if (error) throw new Error(error.message);
+
+            // Повідомляємо сервер
+            const ok = await fetch('{{ url_for("stripe_payment_success", order_id=order.id) }}', {
+                method:'POST', headers:{'X-CSRFToken':'{{ csrf_token() }}', 'Content-Type':'application/json'},
+                body: JSON.stringify({ payment_intent_id: paymentIntent.id })
+            });
+            const okData = await ok.json();
+            if (okData.redirect) window.location.href = okData.redirect;
+
+        } catch (e) {
+            document.getElementById('card-errors').textContent = e.message;
+            btn.disabled = false;
+            btn.textContent = '💳 Сплатити ${{ "%.2f"|format(order.total_price) }}';
+        }
+    }
+</script>
+{% endif %}
+{% endblock %}
