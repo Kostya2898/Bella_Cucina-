@@ -22,8 +22,6 @@ import logging
 import re
 import json
 import openpyxl
-import hashlib
-import hmac
 from openpyxl.styles import Font, PatternFill, Alignment
 
 # ─── Додаток ──────────────────────────────────────────────────────────────────
@@ -46,16 +44,7 @@ app.config['MAIL_PASSWORD']      = os.environ.get('MAIL_PASSWORD', '')   # app p
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_DEFAULT_SENDER', 'Bella Cucina <noreply@bellacucina.com>')
 MAIL_ENABLED = bool(os.environ.get('MAIL_USERNAME'))  # email лише якщо налаштовано
 
-# ─── Stripe ───────────────────────────────────────────────────────────────────
-STRIPE_PUBLIC_KEY  = os.environ.get('STRIPE_PUBLIC_KEY', '')
-STRIPE_SECRET_KEY  = os.environ.get('STRIPE_SECRET_KEY', '')
-STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
-STRIPE_ENABLED     = bool(STRIPE_PUBLIC_KEY and STRIPE_SECRET_KEY)
 
-# ─── LiqPay ───────────────────────────────────────────────────────────────────
-LIQPAY_PUBLIC_KEY  = os.environ.get('LIQPAY_PUBLIC_KEY', '')
-LIQPAY_PRIVATE_KEY = os.environ.get('LIQPAY_PRIVATE_KEY', '')
-LIQPAY_ENABLED     = bool(LIQPAY_PUBLIC_KEY and LIQPAY_PRIVATE_KEY)
 
 db      = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -260,40 +249,7 @@ def send_booking_status_update(user, booking):
     send_email(f'Бронювання {label} — Bella Cucina', [user.email], html)
 
 
-# ─── LiqPay хелпери ───────────────────────────────────────────────────────────
 
-def liqpay_encode(data: dict) -> tuple[str, str]:
-    """Повертає (data_b64, signature) для LiqPay форми."""
-    import base64, json
-    data_str  = json.dumps(data)
-    data_b64  = base64.b64encode(data_str.encode()).decode()
-    raw_sig   = LIQPAY_PRIVATE_KEY + data_b64 + LIQPAY_PRIVATE_KEY
-    signature = base64.b64encode(hashlib.sha1(raw_sig.encode()).digest()).decode()
-    return data_b64, signature
-
-
-def liqpay_decode(data_b64: str, received_sig: str) -> dict | None:
-    """Перевіряє підпис і повертає декодований dict або None."""
-    import base64, json
-    raw_sig   = LIQPAY_PRIVATE_KEY + data_b64 + LIQPAY_PRIVATE_KEY
-    expected  = base64.b64encode(hashlib.sha1(raw_sig.encode()).digest()).decode()
-    if not hmac.compare_digest(expected, received_sig):
-        return None
-    return json.loads(base64.b64decode(data_b64).decode())
-
-
-# ─── Stripe хелпер ────────────────────────────────────────────────────────────
-
-def get_stripe():
-    """Ліниво ініціалізує stripe лише якщо налаштовано."""
-    if not STRIPE_ENABLED:
-        return None
-    try:
-        import stripe
-        stripe.api_key = STRIPE_SECRET_KEY
-        return stripe
-    except ImportError:
-        return None
 
 
 # ─── Захисні HTTP-заголовки ───────────────────────────────────────────────────
@@ -480,7 +436,7 @@ class Payment(db.Model):
     user_id        = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     amount         = db.Column(db.Float, nullable=False)
     currency       = db.Column(db.String(10), default='UAH')
-    provider       = db.Column(db.String(20), nullable=False)   # 'stripe' | 'liqpay' | 'cash'
+    provider       = db.Column(db.String(20), nullable=False)   # 'cash'
     status         = db.Column(db.String(20), default='pending')  # pending|paid|refunded|failed
     external_id    = db.Column(db.String(255))   # Stripe PaymentIntent id / LiqPay order_id
     refund_reason  = db.Column(db.Text)
@@ -916,7 +872,18 @@ def checkout():
         session.pop('promo_code', None)
         session.pop('promo_discount', None)
         session.modified = True
-        return redirect(url_for('payment_select', order_id=order.id))
+        # Оплата при отриманні — одразу підтверджуємо
+        payment = Payment(
+            order_id=order.id, user_id=current_user.id,
+            amount=order.total_price, currency='UAH',
+            provider='cash', status='pending'
+        )
+        db.session.add(payment)
+        order.status = 'confirmed'
+        db.session.commit()
+        send_order_confirmation(current_user, order)
+        flash('Замовлення оформлено! Оплата готівкою при отриманні. 🍽️', 'success')
+        return redirect(url_for('order_detail', order_id=order.id))
 
     cart_items = session.get('cart', {})
     total, items = 0, []
@@ -1565,246 +1532,7 @@ def export_orders():
 
 # ─── Оплата — вибір методу ────────────────────────────────────────────────────
 
-@app.route('/payment/<int:order_id>')
-@login_required
-def payment_select(order_id):
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != current_user.id:
-        abort(403)
-    if order.status not in ('pending',):
-        flash('Це замовлення вже оброблено.', 'info')
-        return redirect(url_for('order_detail', order_id=order.id))
-    return render_template('payment_select.html',
-                           order=order,
-                           stripe_enabled=STRIPE_ENABLED,
-                           liqpay_enabled=LIQPAY_ENABLED,
-                           stripe_public_key=STRIPE_PUBLIC_KEY)
-
-
-# ─── Готівка ──────────────────────────────────────────────────────────────────
-
-@app.route('/payment/<int:order_id>/cash', methods=['POST'])
-@login_required
-def payment_cash(order_id):
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != current_user.id:
-        abort(403)
-    payment = Payment(
-        order_id=order.id, user_id=current_user.id,
-        amount=order.total_price, currency='UAH',
-        provider='cash', status='pending'
-    )
-    db.session.add(payment)
-    order.status = 'confirmed'
-    db.session.commit()
-    send_order_confirmation(current_user, order)
-    flash('Замовлення оформлено! Оплата готівкою при отриманні.', 'success')
-    return redirect(url_for('order_detail', order_id=order.id))
-
-
-# ─── Stripe ───────────────────────────────────────────────────────────────────
-
-@app.route('/payment/<int:order_id>/stripe/create', methods=['POST'])
-@login_required
-def stripe_create_intent(order_id):
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != current_user.id:
-        abort(403)
-    stripe = get_stripe()
-    if not stripe:
-        return jsonify({'error': 'Stripe не налаштовано'}), 503
-    try:
-        amount_cents = int(round(order.total_price * 100))
-        intent = stripe.PaymentIntent.create(
-            amount=amount_cents,
-            currency='usd',
-            metadata={'order_id': order.id, 'user_id': current_user.id},
-            description=f'Bella Cucina — Замовлення #{order.id}'
-        )
-        # Зберігаємо або оновлюємо Payment
-        payment = order.payment
-        if not payment:
-            payment = Payment(order_id=order.id, user_id=current_user.id,
-                              amount=order.total_price, currency='USD', provider='stripe')
-            db.session.add(payment)
-        payment.external_id = intent.id
-        payment.status = 'pending'
-        db.session.commit()
-        return jsonify({'client_secret': intent.client_secret})
-    except Exception as e:
-        security_logger.error(f'[STRIPE_ERROR] {e}')
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/payment/<int:order_id>/stripe/success', methods=['POST'])
-@login_required
-def stripe_payment_success(order_id):
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != current_user.id:
-        abort(403)
-    payment = order.payment
-    if payment:
-        payment.status = 'paid'
-    order.status = 'confirmed'
-    db.session.commit()
-    send_order_confirmation(current_user, order)
-    flash('Оплата пройшла успішно! Дякуємо!', 'success')
-    return jsonify({'success': True, 'redirect': url_for('order_detail', order_id=order.id)})
-
-
-@app.route('/webhook/stripe', methods=['POST'])
-@csrf.exempt
-def stripe_webhook():
-    stripe = get_stripe()
-    if not stripe or not STRIPE_WEBHOOK_SECRET:
-        abort(503)
-    payload   = request.get_data()
-    sig       = request.headers.get('Stripe-Signature', '')
-    try:
-        event = stripe.Webhook.construct_event(payload, sig, STRIPE_WEBHOOK_SECRET)
-    except Exception as e:
-        security_logger.error(f'[STRIPE_WEBHOOK_ERROR] {e}')
-        return jsonify({'error': str(e)}), 400
-
-    if event['type'] == 'payment_intent.succeeded':
-        intent   = event['data']['object']
-        order_id = intent.get('metadata', {}).get('order_id')
-        if order_id:
-            order = Order.query.get(int(order_id))
-            if order:
-                if order.payment:
-                    order.payment.status = 'paid'
-                order.status = 'confirmed'
-                db.session.commit()
-    return jsonify({'received': True})
-
-
-# ─── LiqPay ───────────────────────────────────────────────────────────────────
-
-@app.route('/payment/<int:order_id>/liqpay')
-@login_required
-def liqpay_pay(order_id):
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != current_user.id:
-        abort(403)
-    if not LIQPAY_ENABLED:
-        flash('LiqPay не налаштовано', 'danger')
-        return redirect(url_for('payment_select', order_id=order_id))
-
-    liqpay_order_id = f'bella_{order.id}_{int(datetime.utcnow().timestamp())}'
-    data = {
-        'version':     '3',
-        'public_key':  LIQPAY_PUBLIC_KEY,
-        'action':      'pay',
-        'amount':      str(round(order.total_price, 2)),
-        'currency':    'UAH',
-        'description': f'Bella Cucina — Замовлення #{order.id}',
-        'order_id':    liqpay_order_id,
-        'result_url':  request.host_url + f'payment/{order.id}/liqpay/result',
-        'server_url':  request.host_url + 'webhook/liqpay',
-    }
-    data_b64, signature = liqpay_encode(data)
-
-    # Зберігаємо Payment
-    payment = order.payment
-    if not payment:
-        payment = Payment(order_id=order.id, user_id=current_user.id,
-                          amount=order.total_price, currency='UAH', provider='liqpay')
-        db.session.add(payment)
-    payment.external_id = liqpay_order_id
-    payment.status = 'pending'
-    db.session.commit()
-
-    return render_template('liqpay_pay.html', order=order,
-                           data_b64=data_b64, signature=signature)
-
-
-@app.route('/payment/<int:order_id>/liqpay/result')
-@login_required
-def liqpay_result(order_id):
-    order = Order.query.get_or_404(order_id)
-    return redirect(url_for('order_detail', order_id=order.id))
-
-
-@app.route('/webhook/liqpay', methods=['POST'])
-@csrf.exempt
-def liqpay_webhook():
-    if not LIQPAY_ENABLED:
-        abort(503)
-    data_b64  = request.form.get('data', '')
-    signature = request.form.get('signature', '')
-    decoded   = liqpay_decode(data_b64, signature)
-    if not decoded:
-        security_logger.error('[LIQPAY_WEBHOOK] Невірний підпис')
-        abort(400)
-
-    liqpay_order_id = decoded.get('order_id', '')
-    status          = decoded.get('status', '')
-    # Знаходимо Payment за external_id
-    payment = Payment.query.filter_by(external_id=liqpay_order_id).first()
-    if payment:
-        if status in ('success', 'sandbox'):
-            payment.status        = 'paid'
-            payment.order.status  = 'confirmed'
-            db.session.commit()
-            with app.app_context():
-                send_order_confirmation(payment.payer, payment.order)
-        elif status in ('failure', 'error'):
-            payment.status = 'failed'
-            db.session.commit()
-    return 'OK'
-
-
-# ─── Повернення коштів ────────────────────────────────────────────────────────
-
-@app.route('/admin/refund/<int:payment_id>', methods=['POST'])
-@login_required
-@admin_required
-def admin_refund(payment_id):
-    payment = Payment.query.get_or_404(payment_id)
-    reason  = sanitize_string(request.form.get('reason', 'Повернення коштів'), 500)
-
-    if payment.status != 'paid':
-        return jsonify({'error': 'Можна повернути лише оплачені платежі'}), 400
-
-    if payment.provider == 'stripe':
-        stripe = get_stripe()
-        if stripe and payment.external_id:
-            try:
-                stripe.Refund.create(payment_intent=payment.external_id)
-            except Exception as e:
-                return jsonify({'error': str(e)}), 500
-
-    elif payment.provider == 'liqpay' and LIQPAY_ENABLED:
-        data = {
-            'version':    '3',
-            'public_key': LIQPAY_PUBLIC_KEY,
-            'action':     'refund',
-            'order_id':   payment.external_id,
-            'amount':     str(round(payment.amount, 2)),
-            'currency':   payment.currency,
-        }
-        data_b64, sig = liqpay_encode(data)
-        import urllib.request, urllib.parse
-        params = urllib.parse.urlencode({'data': data_b64, 'signature': sig}).encode()
-        urllib.request.urlopen('https://www.liqpay.ua/api/request', params)
-
-    payment.status        = 'refunded'
-    payment.refund_reason = reason
-    payment.order.status  = 'cancelled'
-    db.session.commit()
-    log_security_event('REFUND', f'payment_id={payment_id} order_id={payment.order_id}')
-    return jsonify({'success': True})
-
-
-# ─── Історія платежів (адмін) ─────────────────────────────────────────────────
-
-@app.route('/admin/payments')
-@login_required
-@admin_required
-def admin_payments():
-    payments = Payment.query.order_by(Payment.created_at.desc()).all()
-    return render_template('admin_payments.html', payments=payments)
+# ─── Експорт Excel ────────────────────────────────────────────────────────────
 
 
 if __name__ == '__main__':
