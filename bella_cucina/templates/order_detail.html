@@ -70,12 +70,8 @@
         <h3 style="color:#d4af37; margin-bottom:1rem;">💳 Оплата</h3>
         <div style="display:flex; align-items:center; gap:1.5rem; flex-wrap:wrap;">
             <div>
-                <div style="color:#888; font-size:0.83rem; margin-bottom:0.3rem;">Провайдер</div>
-                <div style="font-weight:600;">
-                    {% if order.payment.provider == 'stripe' %}💳 Stripe
-                    {% elif order.payment.provider == 'liqpay' %}🇺🇦 LiqPay
-                    {% else %}💵 Готівка{% endif %}
-                </div>
+                <div style="color:#888; font-size:0.83rem; margin-bottom:0.3rem;">Спосіб</div>
+                <div style="font-weight:600;">💵 Готівка при отриманні</div>
             </div>
             <div>
                 <div style="color:#888; font-size:0.83rem; margin-bottom:0.3rem;">Сума</div>
@@ -86,28 +82,13 @@
                 <span class="status-badge
                     {% if order.payment.status == 'paid' %}status-confirmed
                     {% elif order.payment.status == 'pending' %}status-pending
-                    {% elif order.payment.status == 'refunded' %}status-cancelled
                     {% else %}status-cancelled{% endif %}">
                     {% if order.payment.status == 'paid' %}✅ Оплачено
-                    {% elif order.payment.status == 'pending' %}⏳ Очікує
-                    {% elif order.payment.status == 'refunded' %}↩️ Повернено
-                    {% else %}❌ Помилка{% endif %}
+                    {% elif order.payment.status == 'pending' %}⏳ Очікує оплати
+                    {% else %}❌ Скасовано{% endif %}
                 </span>
             </div>
-            {% if order.payment.refund_reason %}
-            <div>
-                <div style="color:#888; font-size:0.83rem; margin-bottom:0.3rem;">Причина повернення</div>
-                <div style="color:#ef5350; font-size:0.9rem;">{{ order.payment.refund_reason }}</div>
-            </div>
-            {% endif %}
         </div>
-    </div>
-    {% elif order.status == 'pending' %}
-    <div class="card" style="margin-bottom:2rem; border-color:rgba(255,193,7,0.3); text-align:center; padding:1.5rem;">
-        <p style="color:#ffd54f; margin-bottom:1rem;">⚠️ Замовлення ще не оплачено</p>
-        <a href="{{ url_for('payment_select', order_id=order.id) }}" class="btn" style="padding:0.8rem 2rem;">
-            💳 Оплатити зараз
-        </a>
     </div>
     {% endif %}
 
